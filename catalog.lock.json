@@ -1,0 +1,8 @@
+{
+  "kind": "production",
+  "revision": 202611152056,
+  "format_version": 1,
+  "artifact_url": "https://github.com/furacca/someone-s-pc-catalog/releases/download/someone-s-pc-catalog-tcgdex-2.49.0/someone-s-pc-catalog-tcgdex-2.49.0.zip",
+  "archive_sha256": "a83bd495d32e1dcb417ca2f46f546a11d6b77e372531308b0bb65c4eee8fd620",
+  "archive_bytes": 48485617
+}

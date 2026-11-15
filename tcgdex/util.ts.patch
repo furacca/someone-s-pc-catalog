@@ -1,0 +1,90 @@
+Offline compiler patch for server/compiler/utils/util.ts
+
+fetchRemoteFile reads the captured CDN index named by SPC_ASSETS_INDEX and
+refuses other URLs. Missing Git edit dates use SOURCE_DATE_EPOCH, supplied
+from the pinned commit, instead of the current clock. Source enumeration is
+sorted before compilation so derived series and statistics are reproducible.
+
+Re-record this patch whenever UTIL_TS_SHA256 stops matching, and bump
+BUILDER_VERSION in pin.env. Never fall back to a live fetch or wall clock.
+
+diff --git a/server/compiler/utils/util.ts b/server/compiler/utils/util.ts
+index a3279e95b7..75fd174041 100644
+--- a/server/compiler/utils/util.ts
++++ b/server/compiler/utils/util.ts
+@@ -2,7 +2,7 @@ import { objectSize } from '@dzeio/object-util'
+ import Queue from '@dzeio/queue'
+ import { glob } from 'glob'
+ import { exec, spawn } from 'node:child_process'
+-import { writeFileSync } from 'node:fs'
++import { readFileSync, writeFileSync } from 'node:fs'
+ import { Card, Languages, Set, SupportedLanguages } from '../../../interfaces'
+ import * as legals from '../../../meta/legals'
+ interface fileCacheInterface {
+@@ -14,23 +14,31 @@ export const DB_PATH = "../"
+ const fileCache: fileCacheInterface = {}
+ 
+ /**
+- * Fetch a JSON file from a remote location
+- * @param url the URL to fetch
++ * The single remote input this offline build accepts, captured beforehand and
++ * passed in through SPC_ASSETS_INDEX.
++ */
++const ASSETS_INDEX_URL = 'https://assets.tcgdex.net/datas.json'
++
++/**
++ * Read a JSON file the build captured beforehand
++ *
++ * The upstream implementation fetched it over the network. This build runs
++ * without a network, so the one expected input is read from disk and every
++ * other URL is refused instead of silently reaching out.
++ *
++ * @param url the URL to resolve
+  * @returns the JSON file content
+  */
+ export async function fetchRemoteFile<T = any>(url: string): Promise<T> {
++	if (url !== ASSETS_INDEX_URL) {
++		throw new Error(`offline build: refusing to fetch ${url}`)
++	}
+ 	if (!fileCache[url]) {
+-		const signal = new AbortController()
+-
+-		const finished = setTimeout(() => {
+-			signal.abort()
+-		}, 60 * 1000);
+-
+-		const resp = await fetch(url, {
+-			signal: signal.signal
+-		})
+-		clearTimeout(finished)
+-		fileCache[url] = resp.json()
++		const path = process.env.SPC_ASSETS_INDEX
++		if (!path) {
++			throw new Error('offline build: SPC_ASSETS_INDEX is not set')
++		}
++		fileCache[url] = JSON.parse(readFileSync(path, 'utf8'))
+ 	}
+ 	return fileCache[url]
+ }
+@@ -39,7 +47,7 @@ const globCache: Record<string, Array<string>> = {}
+ 
+ export async function smartGlob(query: string): Promise<Array<string>> {
+ 	if (!globCache[query]) {
+-		globCache[query] = await glob(query)
++		globCache[query] = (await glob(query)).sort()
+ 	}
+ 	return globCache[query]
+ }
+@@ -175,7 +183,11 @@ export async function loadLastEdits() {
+ export function getLastEdit(path: string): string {
+ 	const date = lastEditsCache[path]
+ 	if (!date) {
+-		return new Date().toISOString()
++		const epoch = process.env.SOURCE_DATE_EPOCH
++		if (!epoch || !/^\d+$/.test(epoch)) {
++			throw new Error('offline build: SOURCE_DATE_EPOCH must be the pinned commit timestamp')
++		}
++		return new Date(Number(epoch) * 1000).toISOString()
+ 		// throw new Error(`edit date not found for file ${path}`)
+ 	}
+ 	return date
