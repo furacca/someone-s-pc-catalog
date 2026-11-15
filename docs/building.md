@@ -74,6 +74,12 @@ Outputs are written under `.cache/tcgdex/`; `WORK_DIR` changes that directory:
 
 The root `catalog.lock.json` still identifies the previous archive until you copy `candidate.lock.json` over it. `make diff` uses the candidate lock to find the archive from the last successful build, including snapshots. `prepare` prints the archive path, release tag and title to use. Each build gets a UTC revision, so compare catalog content with `make diff` rather than expecting identical archive checksums.
 
+### Frozen image index
+
+The TCGdex compiler reads the image CDN's `datas.json` inventory to decide which image, logo and symbol URLs to include. The inventory lists available asset paths; it contains no scans or card definitions.
+
+The live inventory changes: if TCGdex adds a missing image tomorrow, the same card sources produce a catalog with a new image URL and a different checksum. `tcgdex/assets-index.json.gz` is the copy captured for a release, so every checkout builds from the same input. Freezing it does not freeze the image files the CDN serves.
+
 ### Network access
 
 - `make prepare` makes no requests to the TCGdex API or image CDN: it uses the source checkout and frozen image index
