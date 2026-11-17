@@ -4,7 +4,7 @@ See [Building and publishing catalogs](building.md) for the commands and release
 
 ```mermaid
 flowchart TD
-    inputs["Choose a fixed upstream commit<br/>Optionally pin its release tag"]
+    inputs["Choose a fixed upstream commit<br/>Pin its exact release tag or an ancestor release for a snapshot"]
     inputs --> changed{"New upstream tag or commit?"}
     changed -->|Yes| capture["make capture-assets<br/>Freeze the CDN image index"]
     changed -->|No| build["make test and make prepare<br/>Build candidate archive, lock and report"]

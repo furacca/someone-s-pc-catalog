@@ -2,7 +2,7 @@
   "kind": "production",
   "revision": 202611161931,
   "format_version": 1,
-  "artifact_url": "https://github.com/furacca/someone-s-pc-catalog/releases/download/someone-s-pc-catalog-202611161931-snapshot/someone-s-pc-catalog-202611161931-snapshot.zip",
+  "artifact_url": "https://github.com/furacca/someone-s-pc-catalog/releases/download/someone-s-pc-catalog-2.49.0-4218f64dcbf3/someone-s-pc-catalog-2.49.0-4218f64dcbf3.zip",
   "archive_sha256": "097e61a55dbfafaeea3a6a3e23245d6f2af620d7ef128e9f4f60f51957a409d7",
   "archive_bytes": 48826059
 }

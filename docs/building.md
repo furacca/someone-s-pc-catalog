@@ -17,24 +17,29 @@ cd someone-s-pc-catalog
 
 [tcgdex/pin.env](../tcgdex/pin.env) records the source and builder inputs. `TCGDEX_COMMIT` must always be a full 40-character commit available in `TCGDEX_REPO`.
 
-| Mode | `TCGDEX_TAG` | `RELEASE_TAG` |
-| --- | --- | --- |
-| Upstream release | Its tag, such as `v2.49.0` | `someone-s-pc-catalog-tcgdex-2.49.0` for the first catalog |
-| Snapshot | Empty | Empty; `prepare` generates `someone-s-pc-catalog-<revision>-snapshot` |
+| Mode | `TCGDEX_TAG` | `TCGDEX_BASE_TAG` | Generated release tag |
+| --- | --- | --- | --- |
+| Upstream release | Its tag, such as `v2.49.0` | Empty | `someone-s-pc-catalog-2.49.0` |
+| Snapshot | Empty | Ancestor release, such as `v2.49.0` | `someone-s-pc-catalog-2.49.0-4218f64dcbf3` |
+
+Leave `RELEASE_TAG` empty to generate the name above. Version tags use `v<major>.<minor>.<patch>`; snapshots append the first 12 characters of `TCGDEX_COMMIT`.
 
 For a tagged release, choose a [TCGdex release](https://github.com/tcgdex/cards-database/releases) and record its full commit SHA. Preparation checks that the tag points to that commit.
 
-If you fix how this repository builds a published catalog, keep `TCGDEX_TAG` and `TCGDEX_COMMIT` unchanged, bump `BUILDER_VERSION` and set `RELEASE_TAG` to `someone-s-pc-catalog-tcgdex-2.49.0-v2`, then `-v3` for another correction. For example, a fix to card conversion produces a corrected archive using the same TCGdex source.
+If you fix how this repository builds a published catalog, keep the source tag, base tag and commit unchanged, bump `BUILDER_VERSION` and set `RELEASE_TAG` to the generated name followed by `-v2`, then `-v3` for another correction. For example, use `someone-s-pc-catalog-2.49.0-v2` for the release or `someone-s-pc-catalog-2.49.0-4218f64dcbf3-v2` for the snapshot.
 
 For a snapshot containing a fix that has not been tagged upstream, set:
 
 ```sh
 TCGDEX_TAG=""
+TCGDEX_BASE_TAG="v2.49.0"
 TCGDEX_COMMIT="<full 40-character commit SHA>"
 RELEASE_TAG=""
 ```
 
-The commit stays fixed until you change the pin. `prepare` assigns the UTC build revision and snapshot release name; neither is entered by hand. Both release modes produce production catalogs accepted by SOMEONE'S PC.
+The commit stays fixed until you change the pin. Preparation checks that `TCGDEX_BASE_TAG` exists and is an ancestor of the snapshot commit. If it points exactly at that commit, use the upstream release mode instead. Keep `TCGDEX_TAG` empty for snapshots: the base tag does not describe their exact source.
+
+`prepare` assigns the UTC build revision independently of the release name; never enter the revision by hand. Both release modes produce production catalogs accepted by SOMEONE'S PC.
 
 ## Build a candidate
 
@@ -57,7 +62,7 @@ When selecting a different upstream tag or commit, run `make capture-assets` onc
 `prepare` performs these steps:
 
 1. Assigns a UTC revision newer than the root lock, builds `catalogtool` and unpacks the frozen image index
-2. Clones the pinned source commit, verifies the upstream tag when present and applies `tcgdex/util.ts.patch`
+2. Clones the pinned source commit, verifies the exact release tag or snapshot ancestry and applies `tcgdex/util.ts.patch`
 3. Builds the Bun container and installs locked dependencies, then runs the compiler contract tests and compilation without network access
 4. Normalizes the generated JSON and preserves the unpatched source checkout plus compiled files in `source/upstream.tar.gz`
 5. Projects the application catalog, writes the ZIP, lock and report, then inspects the archive
@@ -93,20 +98,20 @@ Run `make diff` while the root lock still describes the previous archive. Check 
 Comparison downloads the previous archive from the lock's `artifact_url`. To use a local copy instead:
 
 ```sh
-PREVIOUS_CATALOG=/path/to/previous/someone-s-pc-catalog-tcgdex-2.49.0.zip make diff
+PREVIOUS_CATALOG=/path/to/previous/someone-s-pc-catalog-2.49.0.zip make diff
 ```
 
 To inspect a downloaded release directly, for example:
 
 ```sh
-go run ./cmd/catalogtool inspect -archive someone-s-pc-catalog-tcgdex-2.49.0.zip -lock catalog.lock.json
+go run ./cmd/catalogtool inspect -archive someone-s-pc-catalog-2.49.0.zip -lock catalog.lock.json
 ```
 
 ## Publish
 
 1. Copy `.cache/tcgdex/candidate.lock.json` to the root `catalog.lock.json`
 2. Commit and push the lock and all source or build changes, including changed files in `tcgdex/`; keep archives and `.cache/` out of Git
-3. On GitHub, draft a release on the pushed commit using the tag and title printed by `prepare`: `SOMEONE'S PC catalog for TCGdex <version> — revision <revision>` for a tagged source, or `SOMEONE'S PC catalog snapshot — revision <revision>`
+3. On GitHub, draft a release on the pushed commit using the tag and title printed by `prepare`: `SOMEONE'S PC catalog for TCGdex <version> — revision <revision>` for a tagged source, or `SOMEONE'S PC catalog for TCGdex <base version> + <short commit SHA> — revision <revision>`
 4. Attach the ZIP printed by `prepare` and the root `catalog.lock.json`, add the notes below and publish
 5. Download and [verify the published files](../README.md#verify-the-download), then update the catalog pinned by [SOMEONE'S PC](https://github.com/furacca/someone-s-pc) for its next release
 
@@ -118,6 +123,7 @@ Release notes:
 Data obtained through TCGDex [https://tcgdex.dev/]
 
 TCGdex source: <upstream tag or snapshot>
+Snapshot base: <base release tag; omit for a tagged source>
 Commit: <full upstream commit SHA>
 Revision: <revision from catalog.lock.json>
 sha256: <archive_sha256 from catalog.lock.json>

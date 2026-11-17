@@ -17,11 +17,12 @@ Download the ZIP and its matching `catalog.lock.json` from the same [GitHub rele
 
 | Example filename | TCGdex source |
 | --- | --- |
-| `someone-s-pc-catalog-tcgdex-2.49.0.zip` | TCGdex 2.49.0 |
-| `someone-s-pc-catalog-tcgdex-2.49.0-v2.zip` | Same TCGdex 2.49.0 commit, with a correction to our catalog |
-| `someone-s-pc-catalog-202611161100-snapshot.zip` | A fixed TCGdex commit without a release tag |
+| `someone-s-pc-catalog-2.49.0.zip` | TCGdex 2.49.0 |
+| `someone-s-pc-catalog-2.49.0-4218f64dcbf3.zip` | TCGdex commit `4218f64dcbf3`, after release 2.49.0 |
+| `someone-s-pc-catalog-2.49.0-v2.zip` | Same TCGdex 2.49.0 commit, with a correction to our catalog |
+| `someone-s-pc-catalog-2.49.0-4218f64dcbf3-v2.zip` | Same snapshot commit, with a correction to our catalog |
 
-The ZIP filename is the release tag followed by `.zip`. Tags start with `someone-s-pc-catalog-`; `-v2`, `-v3` and so on count corrections to our catalog using the same TCGdex source commit.
+The ZIP filename is the release tag followed by `.zip`. Tags use `someone-s-pc-catalog-<TCGdex version>`; snapshots append the first 12 characters of the upstream commit SHA to the base release version. The base release must be an ancestor of that commit. A final `-v2`, `-v3` and so on counts corrections to our catalog using the same TCGdex source commit.
 
 Published releases are never changed. Each new archive has a numeric UTC build revision in `YYYYMMDDHHMM` format. SOMEONE'S PC refuses older revisions, regardless of the release name; snapshots use the same ordering.
 
@@ -30,7 +31,7 @@ Published releases are never changed. Each new archive has a numeric UTC build r
 Use the filename of the release you downloaded, for example:
 
 ```sh
-sha256sum someone-s-pc-catalog-tcgdex-2.49.0.zip
+sha256sum someone-s-pc-catalog-2.49.0.zip
 ```
 
 Compare the result with `archive_sha256` in the downloaded lock. The file size must match `archive_bytes`. Keep the archive and its matching lock together.

@@ -49,6 +49,7 @@ CATALOGTOOL="${WORK_DIR}/catalogtool"
 load_pin() {
 	[ -f "${PIN_FILE}" ] || fail "missing ${PIN_FILE}"
 	TCGDEX_TAG=""
+	TCGDEX_BASE_TAG=""
 	RELEASE_TAG=""
 	# shellcheck disable=SC1090
 	. "${PIN_FILE}"
@@ -58,14 +59,19 @@ load_pin() {
 	done
 	[[ "${TCGDEX_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || fail 'TCGDEX_COMMIT must be the full 40 character commit'
 	[[ "${BUILDER_IMAGE}" == *@sha256:* ]] || fail 'BUILDER_IMAGE must be recorded by digest, not by tag'
-	if [ -n "${TCGDEX_TAG}" ]; then
-		local version="${TCGDEX_TAG#v}"
-		local pattern="^someone-s-pc-catalog-tcgdex-${version//./\\.}(-v([2-9]|[1-9][0-9]+))?$"
-		[[ "${RELEASE_TAG}" =~ ${pattern} ]] \
-			|| fail "RELEASE_TAG must be someone-s-pc-catalog-tcgdex-${version}, optionally followed by -v2, -v3 and so on"
-	else
-		[ -z "${RELEASE_TAG}" ] || fail 'leave RELEASE_TAG empty for a snapshot; prepare names it from the build revision'
+	local source_tag="${TCGDEX_TAG:-${TCGDEX_BASE_TAG}}"
+	[[ "${source_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+		|| fail 'set TCGDEX_TAG for a release or TCGDEX_BASE_TAG for a snapshot to a tag such as v2.49.0'
+	[ -z "${TCGDEX_TAG}" ] || [ -z "${TCGDEX_BASE_TAG}" ] \
+		|| fail 'leave TCGDEX_BASE_TAG empty when TCGDEX_TAG is set'
+	local base="someone-s-pc-catalog-${source_tag#v}"
+	if [ -z "${TCGDEX_TAG}" ]; then
+		base+="-${TCGDEX_COMMIT:0:12}"
 	fi
+	local pattern="^${base//./\\.}(-v([2-9]|[1-9][0-9]+))?$"
+	RELEASE_TAG="${RELEASE_TAG:-${base}}"
+	[[ "${RELEASE_TAG}" =~ ${pattern} ]] \
+		|| fail "RELEASE_TAG must be ${base}, optionally followed by -v2, -v3 and so on"
 }
 
 # Builds catalogtool once per command, so later calls work from any directory.
@@ -105,8 +111,16 @@ checkout() {
 	git -C "${CHECKOUT_DIR}" checkout --quiet "${TCGDEX_COMMIT}" || fail 'the pinned commit is not present in the clone'
 	if [ -n "${TCGDEX_TAG}" ]; then
 		local tagged
-		tagged="$(git -C "${CHECKOUT_DIR}" rev-parse "${TCGDEX_TAG}^{commit}" 2>/dev/null || true)"
+		tagged="$(git -C "${CHECKOUT_DIR}" rev-parse --verify "refs/tags/${TCGDEX_TAG}^{commit}" 2>/dev/null || true)"
 		[ "${tagged}" = "${TCGDEX_COMMIT}" ] || fail "tag ${TCGDEX_TAG} does not point at ${TCGDEX_COMMIT}"
+	else
+		local base_commit
+		base_commit="$(git -C "${CHECKOUT_DIR}" rev-parse --verify "refs/tags/${TCGDEX_BASE_TAG}^{commit}" 2>/dev/null)" \
+			|| fail "base tag ${TCGDEX_BASE_TAG} is not present in the clone"
+		[ "${base_commit}" != "${TCGDEX_COMMIT}" ] \
+			|| fail "commit is exactly ${TCGDEX_BASE_TAG}; set TCGDEX_TAG and leave TCGDEX_BASE_TAG empty"
+		git -C "${CHECKOUT_DIR}" merge-base --is-ancestor "${base_commit}" "${TCGDEX_COMMIT}" \
+			|| fail "base tag ${TCGDEX_BASE_TAG} is not an ancestor of ${TCGDEX_COMMIT}"
 	fi
 }
 
@@ -210,8 +224,7 @@ prepare() {
 		|| fail "revision ${REVISION} (UTC build time) is not greater than ${locked} in catalog.lock.json; wait until the next UTC minute or check the clock"
 	local release_title
 	if [ -z "${TCGDEX_TAG}" ]; then
-		RELEASE_TAG="someone-s-pc-catalog-${REVISION}-snapshot"
-		release_title="SOMEONE'S PC catalog snapshot — revision ${REVISION}"
+		release_title="SOMEONE'S PC catalog for TCGdex ${TCGDEX_BASE_TAG#v} + ${TCGDEX_COMMIT:0:12} — revision ${REVISION}"
 	else
 		release_title="SOMEONE'S PC catalog for TCGdex ${TCGDEX_TAG#v} — revision ${REVISION}"
 	fi
@@ -233,7 +246,7 @@ diff_against_lock() {
 	step 'compare the candidate with the archive catalog.lock.json names'
 	command -v jq >/dev/null 2>&1 || fail 'jq is not available'
 	[ -f "${CANDIDATE_LOCK}" ] || fail "no candidate lock at ${CANDIDATE_LOCK}; run prepare first"
-	# The lock retains the snapshot filename between prepare and diff invocations.
+	# The lock retains the candidate filename between prepare and diff invocations.
 	local archive_name
 	archive_name="$(jq -er '.artifact_url | select(type == "string") | split("/") | last | select(startswith("someone-s-pc-catalog-") and endswith(".zip"))' "${CANDIDATE_LOCK}")" \
 		|| fail 'candidate lock has no valid archive filename; run prepare first'
