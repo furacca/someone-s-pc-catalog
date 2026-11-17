@@ -119,15 +119,28 @@ Use the matching paths if you changed `WORK_DIR`. Published releases and their a
 
 Release notes:
 
-```text
-Data obtained through TCGDex [https://tcgdex.dev/]
+```markdown
+Data obtained through [TCGDex](https://tcgdex.dev/)
 
-TCGdex source: <upstream tag or snapshot>
-Snapshot base: <base release tag; omit for a tagged source>
-Commit: <full upstream commit SHA>
-Revision: <revision from catalog.lock.json>
-sha256: <archive_sha256 from catalog.lock.json>
-Changes: <summary of make diff>
+## Source
+
+| Field | Value |
+| --- | --- |
+| TCGdex source | <upstream tag or snapshot> |
+| Snapshot base | <base release tag; omit this row for a tagged source> |
+| Commit | `<full upstream commit SHA>` |
+| Catalog revision | `<revision from catalog.lock.json>` |
+
+## Changes
+
+- <summary of make diff>
+
+## Verify the download
+
+Download the ZIP and its matching `catalog.lock.json` from this release.
+Compare `sha256sum <release-tag>.zip` with the checksum below and `archive_sha256` in the lock.
+
+**SHA-256:** `<archive_sha256 from catalog.lock.json>`
 ```
 
 With the GitHub CLI, steps 3 and 4 become the commands below, with the notes saved to a file. Check the draft on GitHub before running the second one, which publishes it.

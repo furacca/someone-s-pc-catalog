@@ -2,7 +2,7 @@
 
 Pokémon card catalogs for [SOMEONE'S PC](https://github.com/furacca/someone-s-pc). Each archive contains card data, printings, translations and image addresses, together with its upstream source. Images are downloaded separately by the application.
 
-**Data obtained through TCGDex [https://tcgdex.dev/](https://tcgdex.dev/)**
+Data obtained through [TCGDex](https://tcgdex.dev/)
 
 If you want to support their work, you can [sponsor TCGdex on GitHub](https://github.com/sponsors/tcgdex).
 

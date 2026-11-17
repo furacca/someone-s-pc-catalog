@@ -5,7 +5,7 @@ Instructions for agents working on this repository. Procedures are in [docs/buil
 ## Scope
 
 - Keep the tooling simple: no CI, automation or new dependency unless asked
-- The archive format is shared with `internal/catalogdata` in SOMEONE'S PC; a format change must be made in both repositories
+- If you change the archive format, check compatibility with the reader in `../someone-s-pc/internal/catalogdata` and update it when needed
 
 ## Rules
 
@@ -13,7 +13,7 @@ Instructions for agents working on this repository. Procedures are in [docs/buil
 - Never change, replace or delete a published release or its assets
 - Never write a revision by hand; `prepare.sh` sets it
 - Follow the release tag rule in the README
-- Keep the line "Data obtained through TCGDex [https://tcgdex.dev/]" in the README and in every release's notes
+- Credit TCGDex in the README and every release's notes, with a clickable link to https://tcgdex.dev/
 - Run `make prepare` or `make capture-assets` only when asked
 - Do not commit, tag, push or publish unless asked
 
@@ -31,7 +31,8 @@ Instructions for agents working on this repository. Procedures are in [docs/buil
 
 ## Style
 
-- Concise English, tables for reference data
+- Write short, direct English; avoid filler, repetition and inflated language
+- Use tables for reference data
 - No full stops at the end of bullet items
 - No emoji
 - Comments explain non-obvious behavior, not syntax
