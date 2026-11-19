@@ -534,10 +534,31 @@ func TestFetchStagesAndVerifiesALocalArtifact(t *testing.T) {
 		t.Fatal("the staged artifact differs from the source")
 	}
 
-	// A second run finds the artifact already staged and does nothing.
-	if err := runFetch([]string{"-lock", lockPath, "-out", staged, "-from", artifact}); err != nil {
+	// Reusing a verified file works even when the source is unavailable.
+	if err := runFetch([]string{"-lock", lockPath, "-out", staged, "-from", filepath.Join(input.root, "absent")}); err != nil {
 		t.Fatalf("fetch again: %v", err)
 	}
+
+	lockBytes, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := catalogdata.ParseLock(lockBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock.Revision++
+	lockBytes, err = catalogdata.MarshalLock(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockPath, lockBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runFetch([]string{"-lock", lockPath, "-out", staged, "-from", artifact}); err == nil || !strings.Contains(err.Error(), "revision") {
+		t.Fatalf("fetch with mismatched revision = %v", err)
+	}
+
 }
 
 func TestFetchRefusesAnArtifactThatDoesNotMatchTheLock(t *testing.T) {
@@ -634,4 +655,96 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+func TestBuildKeepsPreviousOutputsOnFailure(t *testing.T) {
+	input := prepare(t, `[{"id":"fxa-1"},{"id":"fxa-2"}]`)
+	out := filepath.Join(input.root, "catalog.zip")
+	if err := runBuild(buildArgs(input, out)); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, flags := range [][]string{
+		{"-report", input.root},
+		{"-lock", filepath.Join(input.root, "missing", "lock")},
+		{"-report", out + ".lock.json"},
+		{"-lock", out},
+	} {
+		before := map[string][]byte{}
+		for _, path := range []string{out, out + ".lock.json", out + ".report.txt"} {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before[path] = data
+		}
+		args := buildArgs(input, out, "-builder-version", "changed")
+		if err := runBuild(append(args, flags...)); err == nil {
+			t.Fatalf("build accepted conflicting or unwritable outputs %v", flags)
+		}
+		for path, want := range before {
+			got, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("build with %v damaged %s: %v", flags, path, err)
+			}
+		}
+	}
+	if err := runBuild(buildArgs(input, out, "-builder-version", "changed")); err != nil {
+		t.Fatalf("retry after failed build: %v", err)
+	}
+}
+
+func TestInstallBuildOutputsRollsBackFailedRename(t *testing.T) {
+	dir := t.TempDir()
+	outputs := []*buildOutput{
+		{path: filepath.Join(dir, "existing")},
+		{path: filepath.Join(dir, "new")},
+		{path: filepath.Join(dir, "last")},
+	}
+	if err := os.WriteFile(outputs[0].path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i, output := range outputs {
+		if err := output.stage(); err != nil {
+			t.Fatal(err)
+		}
+		defer output.clean()
+		// Leave the last staged file missing so the third rename fails.
+		if i < len(outputs)-1 {
+			if err := output.write([]byte("updated")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := installBuildOutputs(outputs); err == nil {
+		t.Fatal("installed an incomplete build")
+	}
+	got, err := os.ReadFile(outputs[0].path)
+	if err != nil || string(got) != "old" {
+		t.Fatalf("previous file was not restored: %v", err)
+	}
+	for _, output := range outputs[1:] {
+		if _, err := os.Stat(output.path); !os.IsNotExist(err) {
+			t.Fatalf("failed build left %s: %v", output.path, err)
+		}
+	}
+}
+
+func TestBuildWritesThroughSidecarSymlink(t *testing.T) {
+	input := prepare(t, `[{"id":"fxa-1"},{"id":"fxa-2"}]`)
+	out := filepath.Join(input.root, "catalog.zip")
+	link := filepath.Join(input.root, "candidate.lock.json")
+	target := "actual.lock.json"
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := runBuild(buildArgs(input, out, "-lock", link)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.Readlink(link); err != nil || got != target {
+		t.Fatalf("lock symlink = %q, %v", got, err)
+	}
+	if err := runInspect([]string{"-archive", out, "-lock", filepath.Join(input.root, target)}); err != nil {
+		t.Fatal(err)
+	}
 }

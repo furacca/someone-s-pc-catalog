@@ -17,7 +17,7 @@ import (
 
 // InventorySnapshot counts files and bytes per top-level directory of a source
 // snapshot, and verifies the exact compiled files read by the projection.
-func InventorySnapshot(path, generatedDir string, languages []string) ([]catalogdata.SourceDirRow, error) {
+func InventorySnapshot(snapshot io.Reader, generatedDir string, languages []string) ([]catalogdata.SourceDirRow, error) {
 	// Include languages retained only for inventory: their series also feed the
 	// manifest. Presence of a language alone does not prove matching input.
 	expected := map[string]string{}
@@ -38,13 +38,7 @@ func InventorySnapshot(path, generatedDir string, languages []string) ([]catalog
 		}
 	}
 	seen := map[string]bool{}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("read source snapshot: %w", err)
-	}
-	defer file.Close()
-
-	decompressed, err := gzip.NewReader(file)
+	decompressed, err := gzip.NewReader(snapshot)
 	if err != nil {
 		return nil, fmt.Errorf("read source snapshot: %w", err)
 	}

@@ -1,15 +1,9 @@
-// Package catalogdata defines the catalog archive format: its types, its
-// manifest and the reader that validates an archive.
-//
-// The same package is kept in the catalog repository, which builds archives,
-// and in SOMEONE'S PC, which reads them. It has no HTTP or database
-// dependency.
+// Package catalogdata builds and validates the catalog archive format read by SOMEONE'S PC.
 package catalogdata
 
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/url"
 	"regexp"
 	"sort"
@@ -733,9 +727,6 @@ func ValidateImageReference(raw string) error {
 	}
 	if port := parsed.Port(); port != "" && port != "443" {
 		return fmt.Errorf("image reference port %q is not allowed", port)
-	}
-	if ip := net.ParseIP(parsed.Hostname()); ip != nil {
-		return fmt.Errorf("image reference must name the asset host, not a literal address")
 	}
 	return nil
 }

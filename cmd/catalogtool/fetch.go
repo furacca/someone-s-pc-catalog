@@ -1,8 +1,7 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -39,11 +38,15 @@ func runFetch(args []string) error {
 		return fmt.Errorf("fetch: %w", err)
 	}
 
-	if staged, err := alreadyStaged(*out, lock); err != nil {
-		return fmt.Errorf("fetch: %w", err)
-	} else if staged {
+	archive, err := catalogdata.OpenFile(*out, lock)
+	if err == nil {
+		archive.Close()
 		fmt.Printf("catalog %s revision %d already staged at %s\n", lock.Kind, lock.Revision, *out)
 		return nil
+	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) && !os.IsNotExist(pathErr) {
+		return fmt.Errorf("fetch: %w", err)
 	}
 
 	target, err := os.CreateTemp(filepath.Dir(*out), ".catalog-fetch-*")
@@ -56,21 +59,16 @@ func runFetch(args []string) error {
 	var source io.ReadCloser
 	if strings.TrimSpace(*from) != "" {
 		source, err = os.Open(*from)
-		if err != nil {
-			target.Close()
-			return fmt.Errorf("fetch: %w", err)
-		}
 	} else {
 		source, err = download(lock.ArtifactURL)
-		if err != nil {
-			target.Close()
-			return fmt.Errorf("fetch: %w", err)
-		}
+	}
+	if err != nil {
+		target.Close()
+		return fmt.Errorf("fetch: %w", err)
 	}
 
-	digest := sha256.New()
 	// Read one extra byte to detect oversized artifacts without truncating them.
-	written, copyErr := io.Copy(io.MultiWriter(target, digest), io.LimitReader(source, lock.ArchiveBytes+1))
+	written, copyErr := io.Copy(target, io.LimitReader(source, lock.ArchiveBytes+1))
 	closeErr := source.Close()
 	if err := target.Close(); err != nil {
 		return fmt.Errorf("fetch: %w", err)
@@ -84,11 +82,7 @@ func runFetch(args []string) error {
 	if written != lock.ArchiveBytes {
 		return fmt.Errorf("fetch: artifact is %d bytes, the lock expects %d", written, lock.ArchiveBytes)
 	}
-	if sum := hex.EncodeToString(digest.Sum(nil)); sum != lock.ArchiveSHA256 {
-		return fmt.Errorf("fetch: artifact checksum %s does not match the locked %s", sum, lock.ArchiveSHA256)
-	}
-
-	archive, err := catalogdata.OpenFile(stagedPath, lock)
+	archive, err = catalogdata.OpenFile(stagedPath, lock)
 	if err != nil {
 		return fmt.Errorf("fetch: %w", err)
 	}
@@ -99,29 +93,6 @@ func runFetch(args []string) error {
 	}
 	fmt.Printf("catalog %s revision %d staged at %s (%d bytes)\n", lock.Kind, lock.Revision, *out, lock.ArchiveBytes)
 	return nil
-}
-
-func alreadyStaged(path string, lock catalogdata.Lock) (bool, error) {
-	info, err := os.Stat(path)
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if info.Size() != lock.ArchiveBytes {
-		return false, nil
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return false, err
-	}
-	defer file.Close()
-	digest := sha256.New()
-	if _, err := io.Copy(digest, file); err != nil {
-		return false, err
-	}
-	return hex.EncodeToString(digest.Sum(nil)) == lock.ArchiveSHA256, nil
 }
 
 func download(artifactURL string) (io.ReadCloser, error) {

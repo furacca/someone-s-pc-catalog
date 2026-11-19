@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -103,10 +104,10 @@ func TestProjectFiltersPocketAndUnsupportedLanguages(t *testing.T) {
 	}
 
 	// The source inventory is discovered independently of the projection.
-	if !containsString(result.SourceLanguages, "ja") || !containsString(result.SourceLanguages, "zh-tw") {
+	if !slices.Contains(result.SourceLanguages, "ja") || !slices.Contains(result.SourceLanguages, "zh-tw") {
 		t.Fatalf("source languages %v, want every compiled catalog", result.SourceLanguages)
 	}
-	if !containsString(result.SourceSeries, "tcgp") || !containsString(result.SourceSeries, "jpx") {
+	if !slices.Contains(result.SourceSeries, "tcgp") || !slices.Contains(result.SourceSeries, "jpx") {
 		t.Fatalf("source series %v, want every series the compiler produced", result.SourceSeries)
 	}
 
@@ -484,8 +485,8 @@ func TestSourceCardVariantPresenceDistinguishesAbsentFromEmpty(t *testing.T) {
 		if err := json.Unmarshal([]byte(payload), &card); err != nil {
 			t.Fatalf("decode %s: %v", payload, err)
 		}
-		if card.variantsDetailedPresent != want {
-			t.Fatalf("%s reported presence %t, want %t", payload, card.variantsDetailedPresent, want)
+		if present := convertCard(card, "", "").VariantsDetailedPresent; present != want {
+			t.Fatalf("%s reported presence %t, want %t", payload, present, want)
 		}
 	}
 }

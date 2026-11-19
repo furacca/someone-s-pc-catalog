@@ -2,6 +2,8 @@ package tcgdexv2
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -31,84 +33,58 @@ func Project(generatedDir string) (Result, error) {
 	if strings.TrimSpace(generatedDir) == "" {
 		return Result{}, fmt.Errorf("project: the generated directory is required")
 	}
-	languages := catalogdata.SortLanguages(catalogdata.AppLanguages)
-
 	sourceLanguages, err := discoverLanguages(generatedDir)
 	if err != nil {
 		return Result{}, err
 	}
+	result := Result{SourceLanguages: sourceLanguages}
+	result.Report.SourceLanguages = len(sourceLanguages)
 
-	// Compiled catalogs are large, so each language is read once and shared
-	// between the projection and the source inventory.
-	loaded := map[string]languageData{}
-	load := func(language string) (languageData, error) {
-		if data, cached := loaded[language]; cached {
-			return data, nil
-		}
-		data, err := readLanguage(generatedDir, language, containsString(languages, language))
-		if err != nil {
-			return languageData{}, err
-		}
-		loaded[language] = data
-		return data, nil
-	}
-
-	english, err := load("en")
-	if err != nil {
-		return Result{}, err
-	}
-
-	translations := map[string]languageData{}
-	for _, language := range languages[1:] {
-		if !containsString(sourceLanguages, language) {
-			// The compiler produced no such catalog at this revision.
-			continue
-		}
-		data, err := load(language)
-		if err != nil {
-			return Result{}, err
-		}
-		translations[language] = data
-	}
-
-	result := Result{
-		SourceLanguages: append([]string(nil), sourceLanguages...),
-		Report: Report{
-			SourceLanguages: len(sourceLanguages),
-			SourceSets:      len(english.SetOrder),
-			SourceCards:     len(english.Cards),
-		},
-	}
-	sort.Strings(result.SourceLanguages)
-
+	var english languageData
+	var translations []languageData
 	seriesSeen := map[string]struct{}{}
+	var duplicates, unusedLanguages []string
 	for _, language := range sourceLanguages {
-		data, err := load(language)
+		projected := slices.Contains(catalogdata.AppLanguages, language)
+		data, err := readLanguage(generatedDir, language, projected)
 		if err != nil {
 			return Result{}, err
 		}
 		for _, series := range data.Series {
-			id := strings.TrimSpace(series.ID)
-			if id == "" {
-				continue
+			if id := strings.TrimSpace(series.ID); id != "" {
+				seriesSeen[id] = struct{}{}
 			}
-			seriesSeen[id] = struct{}{}
+		}
+		if len(data.DuplicateSets) > 0 {
+			duplicates = append(duplicates, fmt.Sprintf("%s sets %s", language, strings.Join(data.DuplicateSets, ", ")))
+		}
+		if len(data.DuplicateCards) > 0 {
+			duplicates = append(duplicates, fmt.Sprintf("%s cards %s", language, strings.Join(data.DuplicateCards, ", ")))
+		}
+
+		switch {
+		case language == "en":
+			english = data
+		case projected:
+			translations = append(translations, data)
+		default:
+			unusedLanguages = append(unusedLanguages, language)
 		}
 	}
-	for id := range seriesSeen {
-		result.SourceSeries = append(result.SourceSeries, id)
+	if english.Sets == nil {
+		return Result{}, fmt.Errorf("project: missing compiled English catalog")
 	}
-	sort.Strings(result.SourceSeries)
+	result.SourceSeries = slices.Sorted(maps.Keys(seriesSeen))
+	result.Report.SourceSets = len(english.SetOrder)
+	result.Report.SourceCards = len(english.Cards)
 
-	pocketRetained := false
 	for _, setID := range english.SetOrder {
 		set := english.Sets[setID]
 		if catalogdata.IsPocketSeries(set.Serie.ID) {
 			result.Report.SkippedPocketSets++
-			pocketRetained = true
 			continue
 		}
-		record, findings, err := projectSet(set, english, translations, languages[1:])
+		record, findings, err := projectSet(set, english, translations)
 		if err != nil {
 			return Result{}, err
 		}
@@ -119,16 +95,6 @@ func Project(generatedDir string) (Result, error) {
 		}
 	}
 
-	duplicates := make([]string, 0, len(sourceLanguages))
-	for _, language := range sourceLanguages {
-		data := loaded[language]
-		if len(data.DuplicateSets) > 0 {
-			duplicates = append(duplicates, fmt.Sprintf("%s sets %s", language, strings.Join(data.DuplicateSets, ", ")))
-		}
-		if len(data.DuplicateCards) > 0 {
-			duplicates = append(duplicates, fmt.Sprintf("%s cards %s", language, strings.Join(data.DuplicateCards, ", ")))
-		}
-	}
 	if len(duplicates) > 0 {
 		sort.Strings(duplicates)
 		result.Findings = append(result.Findings, catalogdata.Finding{
@@ -137,15 +103,9 @@ func Project(generatedDir string) (Result, error) {
 		})
 	}
 
-	unusedLanguages := make([]string, 0, len(sourceLanguages))
-	for _, language := range sourceLanguages {
-		if !containsString(languages, language) {
-			unusedLanguages = append(unusedLanguages, language)
-		}
-	}
-	if pocketRetained || len(unusedLanguages) > 0 {
+	if result.Report.SkippedPocketSets > 0 || len(unusedLanguages) > 0 {
 		message := "Retained in the source snapshot without being projected:"
-		if pocketRetained {
+		if result.Report.SkippedPocketSets > 0 {
 			message += fmt.Sprintf(" %d Pocket sets;", result.Report.SkippedPocketSets)
 		}
 		if len(unusedLanguages) > 0 {
@@ -159,7 +119,7 @@ func Project(generatedDir string) (Result, error) {
 	return result, nil
 }
 
-func projectSet(set sourceSet, english languageData, translations map[string]languageData, languages []string) (catalogdata.SetRecord, []catalogdata.Finding, error) {
+func projectSet(set sourceSet, english languageData, translations []languageData) (catalogdata.SetRecord, []catalogdata.Finding, error) {
 	record := catalogdata.SetRecord{Set: convertSet(set), CardsComplete: true}
 	findings := make([]catalogdata.Finding, 0, 4)
 
@@ -168,11 +128,8 @@ func projectSet(set sourceSet, english languageData, translations map[string]lan
 		advertised = set.CardCount.Official
 	}
 	if len(set.Cards) == 0 && advertised > 0 {
-		// Upstream lists no cards while its card count still announces some.
-		// That count is maintained by hand and upstream has deprecated it
-		// (tcgdex/cards-database#1731), so the difference is not a defect to
-		// wait out. Keep the set in the index and say so; treating the empty
-		// list as authoritative would retire printings the operator still owns.
+		// Treating this list as complete would retire owned printings. The
+		// advertised count is maintained by hand (tcgdex/cards-database#1731).
 		record.CardsComplete = false
 		record.IncompleteReason = fmt.Sprintf("upstream lists no cards; its hand-maintained count announces %d", advertised)
 		findings = append(findings, catalogdata.Finding{
@@ -205,64 +162,14 @@ func projectSet(set sourceSet, english languageData, translations map[string]lan
 		}
 
 		converted := convertCard(card, set.ID, set.Name)
-		cardRecord := catalogdata.CardRecord{Card: converted}
-
-		for _, language := range languages {
-			data, available := translations[language]
-			if !available {
-				continue
-			}
-			localizedSet, hasSet := data.Sets[set.ID]
-			if !hasSet || len(localizedSet.Cards) == 0 {
-				continue
-			}
-			localized, hasCard := data.Cards[cardID]
-			if !hasCard {
-				continue
-			}
-			if strings.TrimSpace(localized.Name) == "" {
-				findings = append(findings, catalogdata.Finding{
-					Code:     catalogdata.FindingLocalizationMissing,
-					SetID:    set.ID,
-					Language: language,
-					Message:  fmt.Sprintf("card %s has an empty %s name and was not projected", cardID, language),
-				})
-				continue
-			}
-			if strings.TrimSpace(localized.LocalID) != strings.TrimSpace(card.LocalID) {
-				// A translation renumbered against English is unusable;
-				// preparation records it instead of shipping a record the
-				// reader would reject.
-				findings = append(findings, catalogdata.Finding{
-					Code:     catalogdata.FindingLocalizationMissing,
-					SetID:    set.ID,
-					Language: language,
-					Message:  fmt.Sprintf("card %s has %s number %q against English %q and was not projected", cardID, language, localized.LocalID, card.LocalID),
-				})
-				continue
-			}
-			if strings.TrimSpace(localized.Image) == "" {
-				localized.Image = card.Image
-			}
-			localizedCard := convertCard(localized, set.ID, localizedSet.Name)
-			// Printing identity is English-only; a translation carries the
-			// same variant data so the reader can validate it.
-			localizedCard.VariantsDetailed = converted.VariantsDetailed
-			localizedCard.VariantsDetailedPresent = converted.VariantsDetailedPresent
-			localizedCard.VariantsFirstEdition = converted.VariantsFirstEdition
-			cardRecord.Localizations = append(cardRecord.Localizations, catalogdata.CardLocalization{
-				Language: language,
-				Card:     localizedCard,
-			})
-		}
+		localizations, missing := localizeCard(converted, translations)
+		findings = append(findings, missing...)
+		cardRecord := catalogdata.CardRecord{Card: converted, Localizations: localizations}
 		record.Cards = append(record.Cards, cardRecord)
 	}
 
-	for _, language := range languages {
-		data, available := translations[language]
-		if !available {
-			continue
-		}
+	for _, data := range translations {
+		language := data.Language
 		localizedSet, hasSet := data.Sets[set.ID]
 		if !hasSet {
 			findings = append(findings, catalogdata.Finding{
@@ -305,12 +212,60 @@ func projectSet(set sourceSet, english languageData, translations map[string]lan
 	return record, findings, nil
 }
 
+func localizeCard(english catalogdata.Card, translations []languageData) ([]catalogdata.CardLocalization, []catalogdata.Finding) {
+	var localizations []catalogdata.CardLocalization
+	var findings []catalogdata.Finding
+	for _, data := range translations {
+		language := data.Language
+		localizedSet, hasSet := data.Sets[english.SetID]
+		if !hasSet || len(localizedSet.Cards) == 0 {
+			continue
+		}
+		localized, hasCard := data.Cards[english.ID]
+		if !hasCard {
+			continue
+		}
+		if strings.TrimSpace(localized.Name) == "" {
+			findings = append(findings, catalogdata.Finding{
+				Code:     catalogdata.FindingLocalizationMissing,
+				SetID:    english.SetID,
+				Language: language,
+				Message:  fmt.Sprintf("card %s has an empty %s name and was not projected", english.ID, language),
+			})
+			continue
+		}
+		if strings.TrimSpace(localized.LocalID) != strings.TrimSpace(english.LocalID) {
+			findings = append(findings, catalogdata.Finding{
+				Code:     catalogdata.FindingLocalizationMissing,
+				SetID:    english.SetID,
+				Language: language,
+				Message:  fmt.Sprintf("card %s has %s number %q against English %q and was not projected", english.ID, language, localized.LocalID, english.LocalID),
+			})
+			continue
+		}
+		if strings.TrimSpace(localized.Image) == "" {
+			localized.Image = english.Image
+		}
+		localizedCard := convertCard(localized, english.SetID, localizedSet.Name)
+		// Printing identity is English-only; a translation carries the
+		// same variant data so the reader can validate it.
+		localizedCard.VariantsDetailed = english.VariantsDetailed
+		localizedCard.VariantsDetailedPresent = english.VariantsDetailedPresent
+		localizedCard.VariantsFirstEdition = english.VariantsFirstEdition
+		localizations = append(localizations, catalogdata.CardLocalization{
+			Language: language,
+			Card:     localizedCard,
+		})
+	}
+	return localizations, findings
+}
+
 func convertSet(set sourceSet) catalogdata.Set {
 	return catalogdata.Set{
 		ID:                strings.TrimSpace(set.ID),
 		Name:              set.Name,
-		Logo:              setLogoURL(set.Logo),
-		Symbol:            setSymbolURL(set.Symbol),
+		Logo:              withExtension(set.Logo, ".webp"),
+		Symbol:            withExtension(set.Symbol, ".png"),
 		ReleaseDate:       strings.TrimSpace(set.ReleaseDate),
 		SeriesID:          strings.TrimSpace(set.Serie.ID),
 		SeriesName:        seriesName(set.Serie),
@@ -345,18 +300,18 @@ func convertCard(card sourceCard, setID, setName string) catalogdata.Card {
 		SetID:          setID,
 		SetName:        setName,
 
-		VariantsDetailedPresent: card.variantsDetailedPresent,
+		VariantsDetailedPresent: card.VariantsDetailed != nil,
 		VariantsFirstEdition:    card.Variants.FirstEdition,
 	}
 	if card.Item != nil {
-		item := convertTextBlock(*card.Item)
+		item := catalogdata.TextBlock(*card.Item)
 		converted.Item = &item
 	}
 	for _, block := range card.Abilities {
-		converted.Abilities = append(converted.Abilities, convertTextBlock(block))
+		converted.Abilities = append(converted.Abilities, catalogdata.TextBlock(block))
 	}
 	for _, block := range card.Attacks {
-		converted.Attacks = append(converted.Attacks, convertTextBlock(block))
+		converted.Attacks = append(converted.Attacks, catalogdata.TextBlock(block))
 	}
 	for _, value := range card.Weaknesses {
 		converted.Weaknesses = append(converted.Weaknesses, catalogdata.TypeValue{Type: value.Type, Value: value.Value})
@@ -364,7 +319,7 @@ func convertCard(card sourceCard, setID, setName string) catalogdata.Card {
 	for _, value := range card.Resistances {
 		converted.Resistances = append(converted.Resistances, catalogdata.TypeValue{Type: value.Type, Value: value.Value})
 	}
-	if card.variantsDetailedPresent {
+	if card.VariantsDetailed != nil {
 		converted.VariantsDetailed = make([]catalogdata.Variant, 0, len(card.VariantsDetailed))
 		for _, variant := range card.VariantsDetailed {
 			converted.VariantsDetailed = append(converted.VariantsDetailed, catalogdata.Variant{
@@ -380,28 +335,12 @@ func convertCard(card sourceCard, setID, setName string) catalogdata.Card {
 	return converted
 }
 
-func convertTextBlock(block sourceTextBlock) catalogdata.TextBlock {
-	return catalogdata.TextBlock{
-		Type:   block.Type,
-		Name:   block.Name,
-		Effect: block.Effect,
-		Damage: block.Damage,
-		Cost:   block.Cost,
-	}
-}
-
 func seriesName(value sourceNamed) string {
 	if strings.TrimSpace(value.Name) != "" {
 		return value.Name
 	}
 	return strings.TrimSpace(value.ID)
 }
-
-// setLogoURL and setSymbolURL apply the upstream extension convention, so the
-// archive stores references that are usable without further guessing.
-func setLogoURL(value string) string { return withExtension(value, ".webp") }
-
-func setSymbolURL(value string) string { return withExtension(value, ".png") }
 
 func withExtension(value, extension string) string {
 	value = strings.TrimSpace(value)
@@ -418,13 +357,4 @@ func lastPathSegment(value string) string {
 	}
 	parts := strings.Split(value, "/")
 	return parts[len(parts)-1]
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }

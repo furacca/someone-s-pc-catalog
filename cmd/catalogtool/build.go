@@ -1,10 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/furacca/someone-s-pc-catalog/internal/catalogbuild"
 	"github.com/furacca/someone-s-pc-catalog/internal/catalogbuild/tcgdexv2"
@@ -54,7 +54,7 @@ func runBuild(args []string) error {
 	if err != nil {
 		return fmt.Errorf("build: %w", err)
 	}
-	sourceDirs, err := catalogbuild.InventorySnapshot(*source, *generated, projection.SourceLanguages)
+	sourceDirs, err := catalogbuild.InventorySnapshot(bytes.NewReader(sourceBytes), *generated, projection.SourceLanguages)
 	if err != nil {
 		return fmt.Errorf("build: %w", err)
 	}
@@ -77,58 +77,73 @@ func runBuild(args []string) error {
 		Findings:        projection.Findings,
 	}
 
-	staged, err := os.CreateTemp(filepath.Dir(*out), ".catalog-*.zip")
-	if err != nil {
-		return fmt.Errorf("build: %w", err)
+	if *lockPath == "" {
+		*lockPath = *out + ".lock.json"
 	}
-	stagedPath := staged.Name()
-	defer os.Remove(stagedPath)
+	if *reportPath == "" {
+		*reportPath = *out + ".report.txt"
+	}
+	archive := buildOutput{path: *out}
+	lock := buildOutput{path: *lockPath}
+	report := buildOutput{path: *reportPath}
+	outputs := []*buildOutput{&archive, &report, &lock}
+	for _, output := range outputs {
+		if err := output.resolve(output != &archive); err != nil {
+			return fmt.Errorf("build: %w", err)
+		}
+	}
+	for _, output := range outputs {
+		if err := output.stage(); err != nil {
+			return fmt.Errorf("build: %w", err)
+		}
+		defer output.clean()
+	}
 
-	result, err := catalogdata.Build(staged, input)
+	result, err := buildVerifiedArchive(archive.stagedPath(), input)
 	if err != nil {
-		staged.Close()
-		return fmt.Errorf("build: %w", err)
-	}
-	if err := staged.Close(); err != nil {
 		return fmt.Errorf("build: %w", err)
 	}
 	result.Lock.ArtifactURL = *artifactURL
-
-	// Verify the written ZIP before it replaces a previous build.
-	archive, err := catalogdata.OpenFile(stagedPath, result.Lock)
-	if err != nil {
-		return fmt.Errorf("build: verify written archive: %w", err)
-	}
-	if err := archive.VerifyEntries(); err != nil {
-		archive.Close()
-		return fmt.Errorf("build: verify written archive: %w", err)
-	}
-	archive.Close()
-
 	lockBytes, err := catalogdata.MarshalLock(result.Lock)
 	if err != nil {
 		return fmt.Errorf("build: %w", err)
 	}
-	if err := os.Rename(stagedPath, *out); err != nil {
-		return fmt.Errorf("build: %w", err)
-	}
-	lockTarget := *lockPath
-	if lockTarget == "" {
-		lockTarget = *out + ".lock.json"
-	}
-	if err := os.WriteFile(lockTarget, lockBytes, 0o644); err != nil {
+	if err := lock.write(lockBytes); err != nil {
 		return fmt.Errorf("build: write lock: %w", err)
 	}
-	reportTarget := *reportPath
-	if reportTarget == "" {
-		reportTarget = *out + ".report.txt"
-	}
-	report := formatReport(result, projection)
-	if err := os.WriteFile(reportTarget, []byte(report), 0o644); err != nil {
+	summary := formatReport(result, projection)
+	if err := report.write([]byte(summary)); err != nil {
 		return fmt.Errorf("build: write report: %w", err)
 	}
-	fmt.Print(report)
+	if err := installBuildOutputs(outputs); err != nil {
+		return fmt.Errorf("build: %w", err)
+	}
+	fmt.Print(summary)
 	return nil
+}
+
+func buildVerifiedArchive(path string, input catalogdata.BuildInput) (catalogdata.BuildResult, error) {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return catalogdata.BuildResult{}, err
+	}
+	result, buildErr := catalogdata.Build(file, input)
+	closeErr := file.Close()
+	if buildErr != nil {
+		return catalogdata.BuildResult{}, buildErr
+	}
+	if closeErr != nil {
+		return catalogdata.BuildResult{}, closeErr
+	}
+	archive, err := catalogdata.OpenFile(path, result.Lock)
+	if err != nil {
+		return catalogdata.BuildResult{}, fmt.Errorf("verify written archive: %w", err)
+	}
+	defer archive.Close()
+	if err := archive.VerifyEntries(); err != nil {
+		return catalogdata.BuildResult{}, fmt.Errorf("verify written archive: %w", err)
+	}
+	return result, nil
 }
 
 func formatReport(result catalogdata.BuildResult, projection tcgdexv2.Result) string {

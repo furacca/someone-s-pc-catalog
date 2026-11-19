@@ -879,32 +879,3 @@ func readTarGz(t *testing.T, source io.Reader) map[string]string {
 	}
 	return files
 }
-
-func TestArchiveSetFingerprints(t *testing.T) {
-	archive := openFixture(t)
-	original, err := archive.SetFingerprint("fxa")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, fingerprint, skipped, err := archive.SetIfChanged("fxa", original); err != nil || !skipped || fingerprint != original {
-		t.Fatalf("unchanged: %q %v %v", fingerprint, skipped, err)
-	}
-	entry := archive.indexBy["fxa"]
-	entry.Name += " changed index"
-	archive.indexBy["fxa"] = entry
-	changed, err := archive.SetFingerprint("fxa")
-	if err != nil || changed == original {
-		t.Fatalf("index not fingerprinted: %v", err)
-	}
-	// Whitespace has no effect on the parsed record, but raw source bytes count.
-	payload, lock := rewriteEntry(t, SetEntryPath("fxa"), func(original []byte) []byte { return append(original, '\n') })
-	rewritten, err := OpenBytes(payload, lock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rewritten.Close()
-	changed, err = rewritten.SetFingerprint("fxa")
-	if err != nil || changed == original {
-		t.Fatalf("raw bytes not fingerprinted: %v", err)
-	}
-}

@@ -11,10 +11,6 @@ import (
 	"time"
 )
 
-// This file builds the small synthetic catalog that development builds and
-// tests use in place of a production archive. It contains no real upstream
-// data.
-
 // FixtureBuilderVersion identifies the fixture generator. Changing it requires
 // regenerating the fixture checked into SOMEONE'S PC.
 const FixtureBuilderVersion = "fixture/1"
@@ -62,16 +58,6 @@ func FixtureInput() BuildInput {
 // BuildFixture writes the development fixture archive.
 func BuildFixture(w io.Writer) (BuildResult, error) {
 	return Build(w, FixtureInput())
-}
-
-// FixtureBytes builds the fixture in memory and returns it with its lock.
-func FixtureBytes() ([]byte, Lock, error) {
-	var buffer bytes.Buffer
-	result, err := BuildFixture(&buffer)
-	if err != nil {
-		return nil, Lock{}, err
-	}
-	return buffer.Bytes(), result.Lock, nil
 }
 
 func fixtureAsset(parts ...string) string {

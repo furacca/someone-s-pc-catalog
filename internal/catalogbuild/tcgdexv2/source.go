@@ -47,8 +47,7 @@ type sourceCardCount struct {
 }
 
 type sourceSeries struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID string `json:"id"`
 }
 
 type sourceCard struct {
@@ -81,10 +80,6 @@ type sourceCard struct {
 	Set              sourceNamed        `json:"set"`
 	VariantsDetailed []sourceVariant    `json:"variants_detailed"`
 	Variants         sourceCardVariants `json:"variants"`
-
-	// variantsDetailedPresent records whether the upstream object contained
-	// the field at all. Absence means "unknown", not "no printings".
-	variantsDetailedPresent bool
 }
 
 type sourceCardVariants struct {
@@ -111,24 +106,6 @@ type sourceVariant struct {
 	Stamp     []string `json:"stamp"`
 	Foil      string   `json:"foil"`
 	VariantID string   `json:"variantId"`
-}
-
-// UnmarshalJSON keeps the presence of variants_detailed, which the projection
-// serializes explicitly into the archive.
-func (c *sourceCard) UnmarshalJSON(data []byte) error {
-	type plain sourceCard
-	var decoded plain
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return err
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
-	}
-	raw, present := fields["variants_detailed"]
-	decoded.variantsDetailedPresent = present && !bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
-	*c = sourceCard(decoded)
-	return nil
 }
 
 // sourceTextNumber accepts the level field in both representations TCGdex
@@ -191,6 +168,7 @@ func (v *sourceTextNumber) UnmarshalJSON(data []byte) error {
 
 // languageData is one compiled language, indexed for lookup.
 type languageData struct {
+	Language string
 	Sets     map[string]sourceSet
 	SetOrder []string
 	Cards    map[string]sourceCard
@@ -206,8 +184,9 @@ type languageData struct {
 // and reported as findings. For example, zh-cn publishes two sets as "CSV1C".
 func readLanguage(generatedDir, language string, strict bool) (languageData, error) {
 	data := languageData{
-		Sets:  map[string]sourceSet{},
-		Cards: map[string]sourceCard{},
+		Language: language,
+		Sets:     map[string]sourceSet{},
+		Cards:    map[string]sourceCard{},
 	}
 
 	var sets []sourceSet
@@ -283,7 +262,10 @@ func discoverLanguages(generatedDir string) ([]string, error) {
 			continue
 		}
 		if _, err := os.Stat(filepath.Join(generatedDir, entry.Name(), cardsFile)); err != nil {
-			continue
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("discover languages: %w", err)
 		}
 		languages = append(languages, entry.Name())
 	}

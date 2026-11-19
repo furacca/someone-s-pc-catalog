@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -64,66 +66,9 @@ func Build(w io.Writer, in BuildInput) (BuildResult, error) {
 		return BuildResult{}, fmt.Errorf("build: the captured assets index is empty")
 	}
 
-	sets := append([]SetRecord(nil), in.Sets...)
-	for setIndex := range sets {
-		sets[setIndex] = normalizeSetRecord(sets[setIndex])
-	}
-	sort.Slice(sets, func(a, b int) bool { return sets[a].Set.ID < sets[b].Set.ID })
-
-	index := Index{Sets: make([]IndexEntry, 0, len(sets))}
-	counts := AppCounts{}
-	coverage := map[string]*LanguageCounts{}
-	payloads := make(map[string][]byte, len(sets))
-
-	for _, record := range sets {
-		entry := indexEntryFor(record)
-		if err := ValidateSetRecord(record, entry); err != nil {
-			return BuildResult{}, fmt.Errorf("build: %w", err)
-		}
-		if _, exists := payloads[entry.Path]; exists {
-			return BuildResult{}, fmt.Errorf("build: set %q appears twice", entry.SetID)
-		}
-		encoded, err := MarshalCanonical(record)
-		if err != nil {
-			return BuildResult{}, fmt.Errorf("build: encode set %q: %w", entry.SetID, err)
-		}
-		if int64(len(encoded)) > MaxEntryBytes {
-			return BuildResult{}, fmt.Errorf("build: set %q is %d bytes, over the %d byte entry limit", entry.SetID, len(encoded), MaxEntryBytes)
-		}
-		payloads[entry.Path] = encoded
-		index.Sets = append(index.Sets, entry)
-
-		counts.Sets++
-		counts.Cards += len(record.Cards)
-		counts.SetLocalizations += len(entry.Languages)
-		for _, language := range entry.Languages {
-			if coverage[language] == nil {
-				coverage[language] = &LanguageCounts{Language: language}
-			}
-			coverage[language].Sets++
-		}
-		for _, card := range record.Cards {
-			counts.Printings += len(card.Card.VariantsDetailed)
-			counts.CardLocalizations += 1 + len(card.Localizations)
-			coverage["en"].Cards++
-			for _, localization := range card.Localizations {
-				if coverage[localization.Language] == nil {
-					coverage[localization.Language] = &LanguageCounts{Language: localization.Language}
-				}
-				coverage[localization.Language].Cards++
-			}
-		}
-	}
-	if err := ValidateIndex(index); err != nil {
-		return BuildResult{}, fmt.Errorf("build: %w", err)
-	}
-	for _, language := range SortLanguages(keysOf(coverage)) {
-		counts.Coverage = append(counts.Coverage, *coverage[language])
-	}
-
-	indexBytes, err := MarshalCanonical(index)
+	catalogEntries, counts, err := buildCatalogEntries(in.Sets)
 	if err != nil {
-		return BuildResult{}, fmt.Errorf("build: encode index: %w", err)
+		return BuildResult{}, err
 	}
 
 	findings := append([]Finding(nil), in.Findings...)
@@ -165,23 +110,79 @@ func Build(w io.Writer, in BuildInput) (BuildResult, error) {
 
 	// Write order is fixed and the inventory follows it, so an archive is
 	// reproducible byte for byte.
-	ordered := []struct {
-		path    string
-		payload []byte
-		store   bool
-	}{
+	ordered := []archiveEntry{
 		{AssetsIndexPath, in.AssetsIndex, false},
 		{SourceArchivePath, in.SourceArchive, true},
-		{IndexPath, indexBytes, false},
 	}
-	for _, entry := range index.Sets {
-		ordered = append(ordered, struct {
-			path    string
-			payload []byte
-			store   bool
-		}{entry.Path, payloads[entry.Path], false})
+	ordered = append(ordered, catalogEntries...)
+	return writeArchive(w, manifest, ordered)
+}
+
+type archiveEntry struct {
+	path    string
+	payload []byte
+	store   bool
+}
+
+func buildCatalogEntries(records []SetRecord) ([]archiveEntry, AppCounts, error) {
+	sets := append([]SetRecord(nil), records...)
+	for setIndex := range sets {
+		sets[setIndex] = normalizeSetRecord(sets[setIndex])
+	}
+	sort.Slice(sets, func(a, b int) bool { return sets[a].Set.ID < sets[b].Set.ID })
+
+	index := Index{Sets: make([]IndexEntry, 0, len(sets))}
+	counts := AppCounts{}
+	coverage := map[string]*LanguageCounts{}
+	entries := make([]archiveEntry, 1, 1+len(sets)) // The index precedes the set entries.
+
+	for _, record := range sets {
+		entry := indexEntryFor(record)
+		if err := ValidateSetRecord(record, entry); err != nil {
+			return nil, AppCounts{}, fmt.Errorf("build: %w", err)
+		}
+		encoded, err := MarshalCanonical(record)
+		if err != nil {
+			return nil, AppCounts{}, fmt.Errorf("build: encode set %q: %w", entry.SetID, err)
+		}
+		entries = append(entries, archiveEntry{entry.Path, encoded, false})
+		index.Sets = append(index.Sets, entry)
+
+		counts.Sets++
+		counts.Cards += len(record.Cards)
+		counts.SetLocalizations += len(entry.Languages)
+		for _, language := range entry.Languages {
+			if coverage[language] == nil {
+				coverage[language] = &LanguageCounts{Language: language}
+			}
+			coverage[language].Sets++
+		}
+		for _, card := range record.Cards {
+			counts.Printings += len(card.Card.VariantsDetailed)
+			counts.CardLocalizations += 1 + len(card.Localizations)
+			coverage["en"].Cards++
+			for _, localization := range card.Localizations {
+				coverage[localization.Language].Cards++
+			}
+		}
+	}
+	if err := ValidateIndex(index); err != nil {
+		return nil, AppCounts{}, fmt.Errorf("build: %w", err)
+	}
+	for _, language := range SortLanguages(slices.Collect(maps.Keys(coverage))) {
+		counts.Coverage = append(counts.Coverage, *coverage[language])
 	}
 
+	indexBytes, err := MarshalCanonical(index)
+	if err != nil {
+		return nil, AppCounts{}, fmt.Errorf("build: encode index: %w", err)
+	}
+
+	entries[0] = archiveEntry{IndexPath, indexBytes, false}
+	return entries, counts, nil
+}
+
+func writeArchive(w io.Writer, manifest Manifest, ordered []archiveEntry) (BuildResult, error) {
 	var expanded int64
 	for _, entry := range ordered {
 		if int64(len(entry.payload)) > MaxEntryBytes {
@@ -194,9 +195,6 @@ func Build(w io.Writer, in BuildInput) (BuildResult, error) {
 			SHA256: sha256Hex(entry.payload),
 		})
 	}
-	if expanded > MaxExpandedBytes {
-		return BuildResult{}, fmt.Errorf("build: entries expand to %d bytes, over the %d byte limit", expanded, MaxExpandedBytes)
-	}
 	if err := ValidateManifest(manifest); err != nil {
 		return BuildResult{}, fmt.Errorf("build: %w", err)
 	}
@@ -206,6 +204,11 @@ func Build(w io.Writer, in BuildInput) (BuildResult, error) {
 	}
 	if int64(len(manifestBytes)) > MaxManifestBytes {
 		return BuildResult{}, fmt.Errorf("build: manifest is %d bytes, over the %d byte limit", len(manifestBytes), MaxManifestBytes)
+	}
+
+	expanded += int64(len(manifestBytes))
+	if expanded > MaxExpandedBytes {
+		return BuildResult{}, fmt.Errorf("build: entries expand to %d bytes, over the %d byte limit", expanded, MaxExpandedBytes)
 	}
 
 	digest := sha256.New()
@@ -305,7 +308,6 @@ func normalizeSetRecord(record SetRecord) SetRecord {
 // time; the source snapshot and the whole catalog are never loaded into
 // memory.
 type Archive struct {
-	zip       *zip.Reader
 	closer    io.Closer
 	manifest  Manifest
 	index     Index
@@ -374,7 +376,6 @@ func Open(r io.ReaderAt, size int64, lock Lock) (*Archive, error) {
 		return nil, fmt.Errorf("read archive: %w", err)
 	}
 	archive := &Archive{
-		zip:     zipReader,
 		entries: make(map[string]*zip.File, len(zipReader.File)),
 		sha256:  sum,
 		bytes:   size,
@@ -401,79 +402,92 @@ func Open(r io.ReaderAt, size int64, lock Lock) (*Archive, error) {
 		archive.entries[file.Name] = file
 	}
 
-	manifestBytes, err := archive.readRaw(ManifestPath, MaxManifestBytes)
+	if err := archive.readManifest(lock); err != nil {
+		return nil, err
+	}
+	if err := archive.readIndex(); err != nil {
+		return nil, err
+	}
+	return archive, nil
+}
+
+func (a *Archive) readManifest(lock Lock) error {
+	manifestBytes, err := a.readRaw(ManifestPath, MaxManifestBytes)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if err := decodeStrict(manifestBytes, &archive.manifest); err != nil {
-		return nil, fmt.Errorf("read manifest: %w", err)
+	if err := decodeStrict(manifestBytes, &a.manifest); err != nil {
+		return fmt.Errorf("read manifest: %w", err)
 	}
-	if err := ValidateManifest(archive.manifest); err != nil {
-		return nil, err
+	if err := ValidateManifest(a.manifest); err != nil {
+		return err
 	}
-	if archive.manifest.Kind != lock.Kind {
-		return nil, fmt.Errorf("archive kind %q does not match the locked %q", archive.manifest.Kind, lock.Kind)
+	if a.manifest.Kind != lock.Kind {
+		return fmt.Errorf("archive kind %q does not match the locked %q", a.manifest.Kind, lock.Kind)
 	}
-	if archive.manifest.Revision != lock.Revision {
-		return nil, fmt.Errorf("archive revision %d does not match the locked %d", archive.manifest.Revision, lock.Revision)
+	if a.manifest.Revision != lock.Revision {
+		return fmt.Errorf("archive revision %d does not match the locked %d", a.manifest.Revision, lock.Revision)
 	}
 
-	archive.inventory = make(map[string]EntryInfo, len(archive.manifest.Entries))
-	for _, entry := range archive.manifest.Entries {
-		archive.inventory[entry.Path] = entry
-		file, exists := archive.entries[entry.Path]
+	a.inventory = make(map[string]EntryInfo, len(a.manifest.Entries))
+	for _, entry := range a.manifest.Entries {
+		a.inventory[entry.Path] = entry
+		file, exists := a.entries[entry.Path]
 		if !exists {
-			return nil, fmt.Errorf("archive is missing inventoried entry %q", entry.Path)
+			return fmt.Errorf("archive is missing inventoried entry %q", entry.Path)
 		}
 		if int64(file.UncompressedSize64) != entry.Bytes {
-			return nil, fmt.Errorf("archive entry %q is %d bytes, the inventory reports %d", entry.Path, file.UncompressedSize64, entry.Bytes)
+			return fmt.Errorf("archive entry %q is %d bytes, the inventory reports %d", entry.Path, file.UncompressedSize64, entry.Bytes)
 		}
 	}
-	for name := range archive.entries {
+	for name := range a.entries {
 		if name == ManifestPath {
 			continue
 		}
-		if _, exists := archive.inventory[name]; !exists {
-			return nil, fmt.Errorf("archive entry %q is not in the manifest inventory", name)
+		if _, exists := a.inventory[name]; !exists {
+			return fmt.Errorf("archive entry %q is not in the manifest inventory", name)
 		}
 	}
-	if archive.manifest.SourceInventory.ArchiveSHA256 != archive.inventory[SourceArchivePath].SHA256 {
-		return nil, fmt.Errorf("archive source snapshot hash disagrees with the entry inventory")
+	if a.manifest.SourceInventory.ArchiveSHA256 != a.inventory[SourceArchivePath].SHA256 {
+		return fmt.Errorf("archive source snapshot hash disagrees with the entry inventory")
 	}
-	if archive.manifest.SourceInventory.AssetsIndexSHA256 != archive.inventory[AssetsIndexPath].SHA256 {
-		return nil, fmt.Errorf("archive assets index hash disagrees with the entry inventory")
+	if a.manifest.SourceInventory.AssetsIndexSHA256 != a.inventory[AssetsIndexPath].SHA256 {
+		return fmt.Errorf("archive assets index hash disagrees with the entry inventory")
 	}
+	return nil
+}
 
-	indexBytes, err := archive.readEntry(IndexPath)
+func (a *Archive) readIndex() error {
+	indexBytes, err := a.readEntry(IndexPath)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if err := decodeStrict(indexBytes, &archive.index); err != nil {
-		return nil, fmt.Errorf("read catalog index: %w", err)
+	if err := decodeStrict(indexBytes, &a.index); err != nil {
+		return fmt.Errorf("read catalog index: %w", err)
 	}
-	if err := ValidateIndex(archive.index); err != nil {
-		return nil, err
+	if err := ValidateIndex(a.index); err != nil {
+		return err
 	}
-	archive.indexBy = make(map[string]IndexEntry, len(archive.index.Sets))
-	for _, entry := range archive.index.Sets {
-		if _, exists := archive.entries[entry.Path]; !exists {
-			return nil, fmt.Errorf("archive is missing set entry %q", entry.Path)
+	a.indexBy = make(map[string]IndexEntry, len(a.index.Sets))
+	for _, entry := range a.index.Sets {
+		if _, exists := a.entries[entry.Path]; !exists {
+			return fmt.Errorf("archive is missing set entry %q", entry.Path)
 		}
-		archive.indexBy[entry.SetID] = entry
+		a.indexBy[entry.SetID] = entry
 	}
-	for name := range archive.entries {
+	for name := range a.entries {
 		if !strings.HasPrefix(name, SetsPrefix) {
 			continue
 		}
 		setID := strings.TrimSuffix(strings.TrimPrefix(name, SetsPrefix), ".json")
-		if _, exists := archive.indexBy[setID]; !exists {
-			return nil, fmt.Errorf("archive set entry %q is not in the catalog index", name)
+		if _, exists := a.indexBy[setID]; !exists {
+			return fmt.Errorf("archive set entry %q is not in the catalog index", name)
 		}
 	}
-	if archive.manifest.AppCounts.Sets != len(archive.index.Sets) {
-		return nil, fmt.Errorf("manifest counts %d sets, the index lists %d", archive.manifest.AppCounts.Sets, len(archive.index.Sets))
+	if a.manifest.AppCounts.Sets != len(a.index.Sets) {
+		return fmt.Errorf("manifest counts %d sets, the index lists %d", a.manifest.AppCounts.Sets, len(a.index.Sets))
 	}
-	return archive, nil
+	return nil
 }
 
 // Manifest returns the validated archive identity and provenance.
@@ -499,63 +513,22 @@ func (a *Archive) Close() error {
 // Set reads and validates one compiled set. The entry is released before the
 // call returns, so iterating the catalog costs one set at a time.
 func (a *Archive) Set(setID string) (SetRecord, error) {
-	record, _, _, err := a.SetIfChanged(setID, "")
-	return record, err
-}
-
-// SetFingerprint hashes verified raw payload bytes, index metadata and set findings.
-func (a *Archive) SetFingerprint(setID string) (string, error) {
-	_, fingerprint, err := a.setFingerprint(setID)
-	return fingerprint, err
-}
-
-func (a *Archive) setFingerprint(setID string) ([]byte, string, error) {
 	entry, exists := a.indexBy[setID]
 	if !exists {
-		return nil, "", fmt.Errorf("set %q is not in the catalog index", setID)
+		return SetRecord{}, fmt.Errorf("set %q is not in the catalog index", setID)
 	}
 	payload, err := a.readEntry(entry.Path)
 	if err != nil {
-		return nil, "", err
-	}
-	findings := []Finding{}
-	for _, finding := range a.manifest.Findings {
-		if finding.SetID == setID {
-			findings = append(findings, finding)
-		}
-	}
-	indexBytes, err := MarshalCanonical(entry)
-	if err != nil {
-		return nil, "", err
-	}
-	findingBytes, err := MarshalCanonical(findings)
-	if err != nil {
-		return nil, "", err
-	}
-	hash := sha256.New()
-	hash.Write(payload)
-	hash.Write(indexBytes)
-	hash.Write(findingBytes)
-	return payload, fmt.Sprintf("%x", hash.Sum(nil)), nil
-}
-
-// SetIfChanged avoids parsing unchanged sets and reads changed payloads only once.
-func (a *Archive) SetIfChanged(setID, previous string) (SetRecord, string, bool, error) {
-	payload, fingerprint, err := a.setFingerprint(setID)
-	if err != nil {
-		return SetRecord{}, "", false, err
-	}
-	if previous == fingerprint {
-		return SetRecord{}, fingerprint, true, nil
+		return SetRecord{}, err
 	}
 	var record SetRecord
 	if err := decodeStrict(payload, &record); err != nil {
-		return SetRecord{}, "", false, fmt.Errorf("read set %q: %w", setID, err)
+		return SetRecord{}, fmt.Errorf("read set %q: %w", setID, err)
 	}
-	if err := ValidateSetRecord(record, a.indexBy[setID]); err != nil {
-		return SetRecord{}, "", false, err
+	if err := ValidateSetRecord(record, entry); err != nil {
+		return SetRecord{}, err
 	}
-	return record, fingerprint, false, nil
+	return record, nil
 }
 
 // EachSet visits every set in index order. It stops at the first error.
@@ -579,11 +552,6 @@ func (a *Archive) OpenSource() (io.ReadCloser, error) {
 		return nil, fmt.Errorf("archive is missing %q", SourceArchivePath)
 	}
 	return file.Open()
-}
-
-// AssetsIndex returns the captured CDN asset index used by the compiler.
-func (a *Archive) AssetsIndex() ([]byte, error) {
-	return a.readEntry(AssetsIndexPath)
 }
 
 // VerifyEntries hashes every inventoried entry, including the preserved
@@ -733,14 +701,6 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 func sha256Hex(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
-}
-
-func keysOf(values map[string]*LanguageCounts) []string {
-	out := make([]string, 0, len(values))
-	for key := range values {
-		out = append(out, key)
-	}
-	return out
 }
 
 func sortedUnique(values []string) []string {

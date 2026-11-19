@@ -79,6 +79,8 @@ Outputs are written under `.cache/tcgdex/`; `WORK_DIR` changes that directory:
 
 The root `catalog.lock.json` still identifies the previous archive until you copy `candidate.lock.json` over it. `make diff` uses the candidate lock to find the archive from the last successful build, including snapshots. `prepare` prints the archive path, release tag and title to use. Each build gets a UTC revision, so compare catalog content with `make diff` rather than expecting identical archive checksums.
 
+The builder stages each output in a sibling directory named `.<filename>.catalog-stage`. It keeps a hard link to each previous file until all three replacements succeed. A write or rename error rolls back the build. If a process is killed during replacement, confirm that no build is running, move any remaining staging directories aside and rerun the build with the same output paths before using the candidate. The `previous` files in those directories are the backups.
+
 ### Frozen image index
 
 The TCGdex compiler reads the image CDN's `datas.json` inventory to decide which image, logo and symbol URLs to include. The inventory lists available asset paths; it contains no scans or card definitions.
